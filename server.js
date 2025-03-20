@@ -1,11 +1,14 @@
 const express = require('express');
+const cors = require('cors'); // Import the CORS package
+
 const app = express();
 const PORT = 3000;
 
+app.use(cors()); // Enable CORS for all routes
 app.use(express.json()); // Middleware to parse JSON requests
 
 // Global variables for storing envelopes and total budget
-let totalBudget = 5000; // Example total budget
+let totalBudget = 5000;
 let envelopes = [
     { id: 1, title: "Groceries", budget: 500 },
     { id: 2, title: "Rent", budget: 1200 },
@@ -102,7 +105,6 @@ app.delete('/envelopes/:id', (req, res) => {
         return res.status(404).json({ error: 'Envelope not found' });
     }
 
-    // Deduct from total budget and remove envelope
     totalBudget -= envelope.budget;
     envelopes = envelopes.filter(env => env.id !== envelopeId);
 
@@ -130,7 +132,6 @@ app.post('/envelopes/transfer/:from/:to', (req, res) => {
         return res.status(400).json({ error: 'Insufficient funds in source envelope' });
     }
 
-    // Transfer funds
     fromEnvelope.budget -= amount;
     toEnvelope.budget += amount;
 
