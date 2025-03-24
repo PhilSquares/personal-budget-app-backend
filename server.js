@@ -1,40 +1,27 @@
 const express = require('express');
-const cors = require('cors'); // Import the CORS package
+const cors = require('cors');
 const db = require('./api/database');
 
 const app = express();
 const PORT = 3000;
 
-app.use(cors()); // Enable CORS for all routes
-app.use(express.json()); // Middleware to parse JSON requests
+app.use(cors());
+app.use(express.json());
 
-// GET: Retrieve all envelopes from the database
+// ----------------- Envelopes Endpoints -----------------
+
+// GET: Retrieve all envelopes
 app.get('/envelopes', (req, res) => {
-    try {
-        const envelopes = db.prepare('SELECT * FROM envelopes').all();
-        res.status(200).json({ envelopes });
-    } catch (error) {
-        console.error('Error fetching envelopes:', error);
-        res.status(500).json({ error: 'Failed to fetch envelopes' });
-    }
+    const envelopes = db.prepare('SELECT * FROM envelopes').all();
+    res.status(200).json({ envelopes });
 });
 
 // GET: Retrieve a specific envelope by ID
 app.get('/envelopes/:id', (req, res) => {
-    const envelopeId = parseInt(req.params.id);
-
-    try {
-        const envelope = db.prepare('SELECT * FROM envelopes WHERE id = ?').get(envelopeId);
-
-        if (!envelope) {
-            return res.status(404).json({ error: 'Envelope not found' });
-        }
-
-        res.status(200).json(envelope);
-    } catch (error) {
-        console.error('Error retrieving envelope:', error);
-        res.status(500).json({ error: 'Failed to fetch envelope' });
-    }
+    const envelope = db.prepare('SELECT * FROM envelopes WHERE id = ?').get(req.params.id);
+    envelope
+        ? res.status(200).json(envelope)
+        : res.status(404).json({ error: 'Envelope not found' });
 });
 
 // POST: Create a new envelope
@@ -45,106 +32,130 @@ app.post('/envelopes', (req, res) => {
         return res.status(400).json({ error: 'Invalid request. Title and budget are required.' });
     }
 
-    try {
-        const stmt = db.prepare('INSERT INTO envelopes (title, budget) VALUES (?, ?)');
-        const result = stmt.run(title, budget);
-
-        res.status(201).json({
-            message: 'Envelope created successfully',
-            envelope: { id: result.lastInsertRowid, title, budget }
-        });
-    } catch (error) {
-        console.error('Error inserting envelope:', error);
-        res.status(500).json({ error: 'Failed to insert envelope' });
-    }
+    const result = db.prepare('INSERT INTO envelopes (title, budget) VALUES (?, ?)').run(title, budget);
+    res.status(201).json({ message: 'Envelope created', envelope: { id: result.lastInsertRowid, title, budget } });
 });
 
-// PUT: Update envelope details (title or budget)
+// PUT: Update envelope (title or budget)
 app.put('/envelopes/:id', (req, res) => {
-    const envelopeId = parseInt(req.params.id);
     const { title, budget } = req.body;
+    const envelope = db.prepare('SELECT * FROM envelopes WHERE id = ?').get(req.params.id);
 
-    try {
-        const existingEnvelope = db.prepare('SELECT * FROM envelopes WHERE id = ?').get(envelopeId);
+    if (!envelope) return res.status(404).json({ error: 'Envelope not found' });
 
-        if (!existingEnvelope) {
-            return res.status(404).json({ error: 'Envelope not found' });
-        }
-
-        const stmt = db.prepare('UPDATE envelopes SET title = ?, budget = ? WHERE id = ?');
-        stmt.run(
-            title || existingEnvelope.title,
-            budget !== undefined ? budget : existingEnvelope.budget,
-            envelopeId
-        );
-
-        res.status(200).json({
-            message: 'Envelope updated successfully',
-            envelope: {
-                id: envelopeId,
-                title: title || existingEnvelope.title,
-                budget: budget !== undefined ? budget : existingEnvelope.budget
-            }
-        });
-    } catch (error) {
-        console.error('Error updating envelope:', error);
-        res.status(500).json({ error: 'Failed to update envelope' });
+    if (title) db.prepare('UPDATE envelopes SET title = ? WHERE id = ?').run(title, req.params.id);
+    if (typeof budget === 'number' && budget >= 0) {
+        db.prepare('UPDATE envelopes SET budget = ? WHERE id = ?').run(budget, req.params.id);
     }
+
+    const updatedEnvelope = db.prepare('SELECT * FROM envelopes WHERE id = ?').get(req.params.id);
+    res.status(200).json({ message: 'Envelope updated', envelope: updatedEnvelope });
 });
 
-// DELETE: Remove an envelope by ID
+// DELETE: Remove an envelope
 app.delete('/envelopes/:id', (req, res) => {
-    const envelopeId = parseInt(req.params.id);
-
-    try {
-        const stmt = db.prepare('DELETE FROM envelopes WHERE id = ?');
-        const result = stmt.run(envelopeId);
-
-        if (result.changes === 0) {
-            return res.status(404).json({ error: 'Envelope not found' });
-        }
-
-        res.status(200).json({ message: 'Envelope deleted successfully' });
-    } catch (error) {
-        console.error('Error deleting envelope:', error);
-        res.status(500).json({ error: 'Failed to delete envelope' });
-    }
+    const result = db.prepare('DELETE FROM envelopes WHERE id = ?').run(req.params.id);
+    result.changes
+        ? res.status(200).json({ message: 'Envelope deleted' })
+        : res.status(404).json({ error: 'Envelope not found' });
 });
 
 // POST: Transfer funds between envelopes
 app.post('/envelopes/transfer/:from/:to', (req, res) => {
-    const fromId = parseInt(req.params.from);
-    const toId = parseInt(req.params.to);
+    const { from, to } = req.params;
     const { amount } = req.body;
 
-    if (typeof amount !== 'number' || amount <= 0) {
-        return res.status(400).json({ error: 'Invalid transfer amount' });
+    const fromEnvelope = db.prepare('SELECT * FROM envelopes WHERE id = ?').get(from);
+    const toEnvelope = db.prepare('SELECT * FROM envelopes WHERE id = ?').get(to);
+
+    if (!fromEnvelope || !toEnvelope || typeof amount !== 'number' || amount <= 0 || fromEnvelope.budget < amount) {
+        return res.status(400).json({ error: 'Invalid transfer request' });
+    }
+
+    db.prepare('UPDATE envelopes SET budget = ? WHERE id = ?').run(fromEnvelope.budget - amount, from);
+    db.prepare('UPDATE envelopes SET budget = ? WHERE id = ?').run(toEnvelope.budget + amount, to);
+
+    res.status(200).json({ message: 'Transfer successful' });
+});
+
+// ----------------- Transactions Endpoints -----------------
+
+// POST: Create a new transaction
+app.post('/transactions', (req, res) => {
+    const { envelopeId, amount, description } = req.body;
+    const date = new Date().toISOString().split('T')[0]; // Today's date in 'YYYY-MM-DD' format
+
+    if (!envelopeId || typeof amount !== 'number' || amount <= 0) {
+        return res.status(400).json({ error: 'Invalid request. Envelope ID and valid amount are required.' });
     }
 
     try {
-        const fromEnvelope = db.prepare('SELECT * FROM envelopes WHERE id = ?').get(fromId);
-        const toEnvelope = db.prepare('SELECT * FROM envelopes WHERE id = ?').get(toId);
+        const result = db.prepare(
+            'INSERT INTO transactions (envelope_id, amount, date, description) VALUES (?, ?, ?, ?)'
+        ).run(envelopeId, amount, date, description);
 
-        if (!fromEnvelope || !toEnvelope) {
-            return res.status(404).json({ error: 'One or both envelopes not found' });
-        }
-
-        if (fromEnvelope.budget < amount) {
-            return res.status(400).json({ error: 'Insufficient funds in source envelope' });
-        }
-
-        // Update balances
-        db.prepare('UPDATE envelopes SET budget = ? WHERE id = ?').run(fromEnvelope.budget - amount, fromId);
-        db.prepare('UPDATE envelopes SET budget = ? WHERE id = ?').run(toEnvelope.budget + amount, toId);
-
-        res.status(200).json({ message: 'Transfer successful' });
+        res.status(201).json({ message: 'Transaction created', transactionId: result.lastInsertRowid });
     } catch (error) {
-        console.error('Error transferring funds:', error);
-        res.status(500).json({ error: 'Failed to transfer funds' });
+        console.error('Error creating transaction:', error);
+        res.status(500).json({ error: 'Error creating transaction' });
     }
 });
 
-// Start the server
+// GET: Retrieve all transactions with optional sorting
+app.get('/transactions', (req, res) => {
+    const { sort } = req.query;
+
+    let query = 'SELECT * FROM transactions';
+
+    if (sort) {
+        switch (sort) {
+            case 'amount-asc':
+                query += ' ORDER BY amount ASC';
+                break;
+            case 'amount-desc':
+                query += ' ORDER BY amount DESC';
+                break;
+            case 'date-asc':
+                query += ' ORDER BY date ASC';
+                break;
+            case 'date-desc':
+                query += ' ORDER BY date DESC';
+                break;
+            case 'description-asc':
+                query += ' ORDER BY description ASC';
+                break;
+            case 'description-desc':
+                query += ' ORDER BY description DESC';
+                break;
+            default:
+                break;
+        }
+    }
+
+    const transactions = db.prepare(query).all();
+    res.status(200).json({ transactions });
+});
+
+// GET: Retrieve transactions for a specific envelope
+app.get('/transactions/:envelopeId', (req, res) => {
+    const transactions = db.prepare('SELECT * FROM transactions WHERE envelope_id = ?').all(req.params.envelopeId);
+    transactions.length
+        ? res.status(200).json({ transactions })
+        : res.status(404).json({ error: 'No transactions found for this envelope' });
+});
+
+// DELETE: Remove a transaction by ID
+app.delete('/transactions/:id', (req, res) => {
+    const result = db.prepare('DELETE FROM transactions WHERE id = ?').run(req.params.id);
+
+    if (result.changes) {
+        res.status(200).json({ message: 'Transaction deleted successfully' });
+    } else {
+        res.status(404).json({ error: 'Transaction not found' });
+    }
+});
+
+// ----------------- Start Server -----------------
 app.listen(PORT, () => {
-    console.log(`Server is running on http://localhost:${PORT}`);
+    console.log(`Server running at http://localhost:${PORT}`);
 });
